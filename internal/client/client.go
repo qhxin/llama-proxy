@@ -68,6 +68,11 @@ func New(cfg *config.ClientConfig, logger *logrus.Logger) (*Client, error) {
 		return nil, fmt.Errorf("invalid server URL: %w", err)
 	}
 
+	// 自动添加 /ws 路径（如果没有）
+	if wsURL.Path == "" || wsURL.Path == "/" {
+		wsURL.Path = "/ws"
+	}
+
 	// 添加认证密钥到URL
 	query := wsURL.Query()
 	query.Set("key", cfg.Key)
@@ -133,21 +138,46 @@ func (c *Client) Start() error {
 // Stop 停止客户端
 func (c *Client) Stop() error {
 	c.logger.Info("Stopping client...")
+	
+	// 停止重连
 	c.stopReconnect.Store(true)
+	
+	// 取消上下文
 	c.cancel()
 
-	// 关闭WebSocket连接
+	// 关闭WebSocket连接（这会中断 readPump 和 writePump 的阻塞操作）
 	c.wsMu.Lock()
-	if c.wsConn != nil {
-		c.wsConn.Close()
+	conn := c.wsConn
+	if conn != nil {
+		// 设置立即关闭，不等待
+		conn.Close()
 	}
 	c.wsMu.Unlock()
 
-	// 关闭通道
-	close(c.sendChan)
+	// 等待一小段时间让协程检测到关闭
+	time.Sleep(100 * time.Millisecond)
 
-	// 等待所有协程结束
-	c.wg.Wait()
+	// 安全关闭通道（使用 select 防止 panic）
+	select {
+	case <-c.sendChan:
+		// 已经关闭
+	default:
+		close(c.sendChan)
+	}
+
+	// 等待所有协程结束（带超时）
+	done := make(chan struct{})
+	go func() {
+		c.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// 正常退出
+	case <-time.After(5 * time.Second):
+		c.logger.Warn("Client stop timeout, forcing exit")
+	}
 
 	// 关闭加密器
 	if err := c.crypto.Close(); err != nil {
@@ -233,10 +263,16 @@ func (c *Client) connect() error {
 	c.isConnected.Store(true)
 	c.lastPingTime = time.Now()
 
-	// 启动读写协程
+	// 启动读写协程（使用 WaitGroup 跟踪）
 	c.wg.Add(2)
-	go c.readPump()
-	go c.writePump()
+	go func() {
+		defer c.wg.Done()
+		c.readPump()
+	}()
+	go func() {
+		defer c.wg.Done()
+		c.writePump()
+	}()
 
 	return nil
 }
@@ -254,7 +290,6 @@ func (c *Client) disconnect() {
 
 // readPump 读取WebSocket消息
 func (c *Client) readPump() {
-	defer c.wg.Done()
 	defer c.disconnect()
 
 	for {
@@ -266,9 +301,12 @@ func (c *Client) readPump() {
 			return
 		}
 
-		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		// 设置90秒read deadline，服务端每30秒发送ping，有充足余量
+		conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 		conn.SetPongHandler(func(string) error {
 			c.lastPingTime = time.Now()
+			// 关键：收到pong时重置read deadline
+			conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 			return nil
 		})
 
@@ -312,8 +350,6 @@ func (c *Client) readPump() {
 
 // writePump 写入WebSocket消息
 func (c *Client) writePump() {
-	defer c.wg.Done()
-
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -324,7 +360,8 @@ func (c *Client) writePump() {
 			conn := c.wsConn
 			c.wsMu.RUnlock()
 
-			if conn == nil || !ok {
+			if !ok || conn == nil {
+				// sendChan 已关闭或连接断开
 				if msg != nil {
 					protocol.ReleaseMessage(msg)
 				}

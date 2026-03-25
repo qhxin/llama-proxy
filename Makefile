@@ -10,6 +10,17 @@ LDFLAGS := -X main.Version=$(VERSION) \
            -X main.BuildTime=$(BUILD_TIME) \
            -X main.GitCommit=$(GIT_COMMIT)
 
+# 检测操作系统以设置正确的二进制文件名
+ifeq ($(OS),Windows_NT)
+    BINARY_NAME := llama-proxy.exe
+    RM := del /Q
+    RMDIR := rmdir /S /Q
+else
+    BINARY_NAME := llama-proxy
+    RM := rm -f
+    RMDIR := rm -rf
+endif
+
 # 默认目标
 .DEFAULT_GOAL := build
 
@@ -18,7 +29,8 @@ LDFLAGS := -X main.Version=$(VERSION) \
 
 build:
 	@echo "Building llama-proxy..."
-	go build -ldflags "$(LDFLAGS)" -o bin/llama-proxy ./cmd/llama-proxy
+	go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME) ./cmd/llama-proxy
+	@echo "Build complete: bin/$(BINARY_NAME)"
 
 build-linux:
 	@echo "Building for Linux..."
@@ -39,7 +51,13 @@ build-all: build-linux build-windows build-darwin
 
 clean:
 	@echo "Cleaning..."
-	rm -rf bin/
+ifeq ($(OS),Windows_NT)
+	@if exist bin $(RMDIR) bin
+	@if exist release $(RMDIR) release
+else
+	$(RMDIR) bin/
+	$(RMDIR) release/
+endif
 	go clean
 
 test:
@@ -52,7 +70,12 @@ test-race:
 
 install: build
 	@echo "Installing..."
-	cp bin/llama-proxy $(GOPATH)/bin/llama-proxy 2>/dev/null || cp bin/llama-proxy /usr/local/bin/llama-proxy
+ifeq ($(OS),Windows_NT)
+	@echo "Please manually copy bin\$(BINARY_NAME) to your desired location"
+	@echo "Or add bin\ directory to your PATH"
+else
+	cp bin/$(BINARY_NAME) $(GOPATH)/bin/$(BINARY_NAME) 2>/dev/null || cp bin/$(BINARY_NAME) /usr/local/bin/$(BINARY_NAME)
+endif
 
 # 依赖管理
 .PHONY: deps deps-update
@@ -87,19 +110,32 @@ vet:
 
 config:
 	@echo "Generating example config..."
+ifeq ($(OS),Windows_NT)
+	@if not exist etc mkdir etc
+	.\bin\$(BINARY_NAME) config example > etc\config.example.yaml
+else
 	mkdir -p etc
-	./bin/llama-proxy config example > etc/config.example.yaml
+	./bin/$(BINARY_NAME) config example > etc/config.example.yaml
+endif
 
 # 运行
 .PHONY: run-server run-client
 
 run-server: build
 	@echo "Running server..."
-	./bin/llama-proxy server --key $(LLAMA_PROXY_KEY)
+ifeq ($(OS),Windows_NT)
+	.\bin\$(BINARY_NAME) server --key $(LLAMA_PROXY_KEY)
+else
+	./bin/$(BINARY_NAME) server --key $(LLAMA_PROXY_KEY)
+endif
 
 run-client: build
 	@echo "Running client..."
-	./bin/llama-proxy client --server $(LLAMA_PROXY_SERVER) --llama $(LLAMA_PROXY_LLAMA) --key $(LLAMA_PROXY_KEY)
+ifeq ($(OS),Windows_NT)
+	.\bin\$(BINARY_NAME) client --server $(LLAMA_PROXY_SERVER) --llama $(LLAMA_PROXY_LLAMA) --key $(LLAMA_PROXY_KEY)
+else
+	./bin/$(BINARY_NAME) client --server $(LLAMA_PROXY_SERVER) --llama $(LLAMA_PROXY_LLAMA) --key $(LLAMA_PROXY_KEY)
+endif
 
 # 发布
 .PHONY: release

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -26,6 +27,10 @@ type Server struct {
 	httpServer  *http.Server
 	wsUpgrader  websocket.Upgrader
 
+	// WebSocket独立服务器（当WSPort配置时启用）
+	wsServer    *http.Server
+	wsListener  net.Listener
+
 	// WebSocket连接管理
 	clients     map[string]*ClientConn
 	clientsMu   sync.RWMutex
@@ -44,6 +49,7 @@ type Server struct {
 	// 生命周期
 	ctx         context.Context
 	cancel      context.CancelFunc
+	cancelOnce  sync.Once
 	wg          sync.WaitGroup
 }
 
@@ -117,6 +123,21 @@ func New(cfg *config.ServerConfig, logger *logrus.Logger) (*Server, error) {
 		IdleTimeout:  120 * time.Second,
 	}
 
+	// 如果配置了独立的WebSocket端口，创建独立的WS服务器
+	if cfg.WSPort != "" && cfg.WSPort != cfg.Listen {
+		wsRouter := mux.NewRouter()
+		wsRouter.HandleFunc("/ws", s.handleWebSocket)
+		wsRouter.HandleFunc("/health", s.handleHealth).Methods("GET")
+
+		s.wsServer = &http.Server{
+			Addr:         cfg.WSPort,
+			Handler:      wsRouter,
+			ReadTimeout:  30 * time.Second,
+			WriteTimeout: 30 * time.Second,
+			IdleTimeout:  120 * time.Second,
+		}
+	}
+
 	return s, nil
 }
 
@@ -139,27 +160,51 @@ func (s *Server) setupRoutes(router *mux.Router) {
 
 // Start 启动服务端
 func (s *Server) Start() error {
-	s.logger.Infof("Starting server on %s", s.config.Listen)
-	s.logger.Infof("WebSocket endpoint: ws://%s/ws", s.config.Listen)
+	s.logger.Infof("Starting HTTP server on %s", s.config.Listen)
+
+	// 启动HTTP服务器（在后台协程中）
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			s.logger.Errorf("HTTP server error: %v", err)
+		}
+	}()
+
+	// 如果配置了独立的WebSocket端口，启动它
+	if s.wsServer != nil {
+		s.logger.Infof("Starting WebSocket server on %s", s.config.WSPort)
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			if err := s.wsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				s.logger.Errorf("WebSocket server error: %v", err)
+			}
+		}()
+	} else {
+		s.logger.Infof("WebSocket endpoint: ws://%s/ws (shared with HTTP)", s.config.Listen)
+	}
 
 	// 启动清理协程
 	s.wg.Add(1)
 	go s.cleanupRoutine()
 
-	// 启动HTTP服务器
-	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return fmt.Errorf("HTTP server error: %w", err)
-	}
-
 	return nil
+}
+
+// Wait 阻塞等待服务端停止
+func (s *Server) Wait() {
+	s.wg.Wait()
 }
 
 // Stop 停止服务端
 func (s *Server) Stop() error {
 	s.logger.Info("Stopping server...")
 
-	// 取消上下文
-	s.cancel()
+	// 取消上下文（只执行一次）
+	s.cancelOnce.Do(func() {
+		s.cancel()
+	})
 
 	// 关闭所有WebSocket连接
 	s.clientsMu.Lock()
@@ -183,6 +228,13 @@ func (s *Server) Stop() error {
 
 	if err := s.httpServer.Shutdown(ctx); err != nil {
 		s.logger.Errorf("HTTP server shutdown error: %v", err)
+	}
+
+	// 关闭WebSocket服务器（如果存在）
+	if s.wsServer != nil {
+		if err := s.wsServer.Shutdown(ctx); err != nil {
+			s.logger.Errorf("WebSocket server shutdown error: %v", err)
+		}
 	}
 
 	// 等待所有协程结束
@@ -369,9 +421,12 @@ func (c *ClientConn) readPump() {
 	}()
 
 	c.Conn.SetReadLimit(protocol.MaxMessageSize)
-	c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	// 设置90秒read deadline，客户端每30秒发送ping，有充足余量
+	c.Conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 	c.Conn.SetPongHandler(func(string) error {
 		c.lastPing = time.Now()
+		// 关键：收到pong时重置read deadline
+		c.Conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 		return nil
 	})
 

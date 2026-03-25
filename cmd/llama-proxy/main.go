@@ -92,9 +92,9 @@ func serverCmd() *cobra.Command {
 				cfg.Server.CompressionLevel = compressionLevel
 			}
 
-			// 验证密钥
-			if cfg.Server.Key == "" {
-				return fmt.Errorf("请设置加密密钥：使用 --key 参数或配置文件")
+			// 验证服务端配置
+			if err := cfg.ValidateServer(); err != nil {
+				return err
 			}
 
 			// 创建日志
@@ -177,15 +177,9 @@ func clientCmd() *cobra.Command {
 				cfg.Client.CompressionLevel = compressionLevel
 			}
 
-			// 验证配置
-			if cfg.Client.Key == "" {
-				return fmt.Errorf("请设置加密密钥：使用 --key 参数或配置文件")
-			}
-			if cfg.Client.ServerWS == "" {
-				return fmt.Errorf("请设置服务端地址：使用 --server 参数或配置文件")
-			}
-			if cfg.Client.LlamaURL == "" {
-				return fmt.Errorf("请设置llama-server地址：使用 --llama 参数或配置文件")
+			// 验证客户端配置
+			if err := cfg.ValidateClient(); err != nil {
+				return err
 			}
 
 			// 创建日志

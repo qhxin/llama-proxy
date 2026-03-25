@@ -88,7 +88,7 @@ func DefaultConfig() *Config {
 	}
 }
 
-// Load 从文件加载配置
+// Load 从文件加载配置（不自动验证，由调用者根据模式验证）
 func Load(configPath string) (*Config, error) {
 	cfg := DefaultConfig()
 
@@ -110,11 +110,6 @@ func Load(configPath string) (*Config, error) {
 
 	// 从环境变量覆盖配置
 	loadFromEnv(cfg)
-
-	// 验证配置
-	if err := cfg.Validate(); err != nil {
-		return nil, err
-	}
 
 	return cfg, nil
 }
@@ -167,9 +162,19 @@ func loadFromEnv(cfg *Config) {
 	}
 }
 
-// Validate 验证配置
+// Validate 验证完整配置（服务端+客户端）
 func (c *Config) Validate() error {
-	// 服务端配置验证
+	if err := c.ValidateServer(); err != nil {
+		return err
+	}
+	if err := c.ValidateClient(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ValidateServer 仅验证服务端配置
+func (c *Config) ValidateServer() error {
 	if c.Server.Key == "" {
 		return fmt.Errorf("server key is required")
 	}
@@ -180,7 +185,17 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("server compression level must be between 1 and 22")
 	}
 
-	// 客户端配置验证
+	// 日志配置验证
+	validLevels := []string{"debug", "info", "warn", "error", "fatal"}
+	if !contains(validLevels, strings.ToLower(c.Log.Level)) {
+		return fmt.Errorf("invalid log level: %s", c.Log.Level)
+	}
+
+	return nil
+}
+
+// ValidateClient 仅验证客户端配置
+func (c *Config) ValidateClient() error {
 	if c.Client.Key == "" {
 		return fmt.Errorf("client key is required")
 	}

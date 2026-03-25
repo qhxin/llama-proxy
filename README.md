@@ -46,6 +46,8 @@ WebSocket代理程序，用于实现云端AI应用程序通过加密压缩通道
 
 ### 1. 下载安装
 
+#### Linux/macOS (本地编译)
+
 ```bash
 # 克隆仓库
 git clone https://github.com/yourusername/llama-proxy.git
@@ -59,36 +61,97 @@ wget https://github.com/yourusername/llama-proxy/releases/download/v1.0.0/llama-
 tar -xzf llama-proxy-linux-amd64.tar.gz
 ```
 
+#### Windows (本地为 Linux 服务器交叉编译)
+
+```powershell
+# 在 Windows PowerShell 中执行
+
+# 方法1: 使用脚本一键构建 Windows + Linux 版本
+.\build-linux-on-windows.ps1
+
+# 方法2: 手动构建 Linux 版本（用于上传到服务器）
+$env:GOOS = 'linux'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
+go build -ldflags "-s -w" -o bin/llama-proxy-linux-amd64 ./cmd/llama-proxy
+# 构建完成后清理环境变量
+Remove-Item Env:\GOOS; Remove-Item Env:\GOARCH; Remove-Item Env:\CGO_ENABLED
+
+# 上传到 Linux 服务器
+scp bin/llama-proxy-linux-amd64 user@your-server:~/llama-proxy/
+```
+
+**注意**: 在 Windows 上直接运行 `make build-linux` 会失败，因为 Makefile 的环境变量语法在 Windows 上不兼容。请使用上述 PowerShell 方法。
+
 ### 2. 服务端部署（VPS）
 
+创建服务端配置文件 `server.yaml`：
+
+```yaml
+server:
+  listen: ":8080"              # HTTP API 监听地址
+  ws_port: ":18081"            # WebSocket 独立端口（可选，与 listen 相同时共用端口）
+  key: "your-secret-key-here"  # 加密密钥（至少16字符）
+  max_concurrent_requests: 50  # 最大并发请求数
+  compression_level: 15       # zstd压缩级别（1-22）
+
+# 可以包含客户端配置（服务端会忽略）
+client:
+  server_ws: "ws://localhost:18081"
+  llama_url: "http://127.0.0.1:8080"
+  key: "your-secret-key-here"
+
+log:
+  level: "info"
+```
+
+启动服务端：
+
 ```bash
-# 生成配置文件
-./llama-proxy config example > server.yaml
-
-# 编辑配置，设置强密码
-vim server.yaml
-
-# 启动服务端
+# 使用配置文件启动
 ./llama-proxy server --config server.yaml
 
 # 或使用命令行参数
-./llama-proxy server -l :8080 -k "your-secret-key-32-bytes-long!"
+./llama-proxy server -l :8080 --ws-port :18081 -k "your-secret-key-32-bytes-long!"
 ```
+
+**端口说明**:
+- `listen`: HTTP API 端口，供 AI 应用程序调用
+- `ws_port`: WebSocket 端口，供客户端连接（可选，默认与 listen 共用）
 
 ### 3. 客户端运行（本地）
 
+创建客户端配置文件 `client.yaml`：
+
+```yaml
+client:
+  server_ws: "ws://your-vps-ip:18081"  # 服务端 WebSocket 地址
+  llama_url: "http://127.0.0.1:8080"    # 本地 llama-server 地址
+  key: "your-secret-key-here"           # 加密密钥（必须与服务端相同）
+  reconnect_interval: 5s                 # 断线重连间隔
+  max_concurrent_requests: 10            # 最大并发请求数
+  compression_level: 15                  # zstd压缩级别
+
+# 可以包含服务端配置（客户端会忽略）
+server:
+  listen: ":8080"
+  key: "your-secret-key-here"
+
+log:
+  level: "info"
+```
+
+启动客户端：
+
 ```bash
-# 生成配置文件
-./llama-proxy config example > client.yaml
-
-# 编辑配置，设置服务端地址和相同密钥
-vim client.yaml
-
-# 启动客户端
+# 使用配置文件启动
 ./llama-proxy client --config client.yaml
 
 # 或使用命令行参数
-./llama-proxy client -s ws://your-vps:8080 --llama http://127.0.0.1:8080 -k "your-secret-key-32-bytes-long!"
+./llama-proxy client -s ws://your-vps:18081 --llama http://127.0.0.1:8080 -k "your-secret-key-32-bytes-long!"
+```
+
+**Windows 客户端**:
+```powershell
+.\llama-proxy.exe client --config client.yaml
 ```
 
 ### 4. 配置AI应用程序
@@ -126,26 +189,65 @@ for chunk in response:
 
 ## 配置说明
 
-### 服务端配置
+### 统一配置文件（推荐）
+
+可以在一个配置文件中同时包含服务端和客户端配置，程序会根据运行模式自动选择相应部分：
 
 ```yaml
+# 服务端配置（server 命令使用）
 server:
   listen: ":8080"              # HTTP API监听地址
+  ws_port: ":18081"            # WebSocket监听地址（可选）
   key: "your-secret-key"       # 加密密钥（至少16字符）
   max_concurrent_requests: 50  # 最大并发请求数
   compression_level: 15        # zstd压缩级别（1-22）
   enable_metrics: false        # 启用监控端点
+  metrics_port: ":9090"       # 监控端点端口
+
+# 客户端配置（client 命令使用）
+client:
+  server_ws: "ws://vps:18081"         # 服务端WebSocket地址
+  llama_url: "http://127.0.0.1:8080"  # 本地llama-server
+  key: "your-secret-key"              # 必须与服务器相同
+  reconnect_interval: 5s              # 重连间隔
+  max_concurrent_requests: 10          # 最大并发请求数
+  compression_level: 15              # zstd压缩级别
+
+# 日志配置（server 和 client 都使用）
+log:
+  level: "info"     # 日志级别: debug, info, warn, error, fatal
+  format: "text"    # 日志格式: text, json
+  output: "stdout"  # 输出: stdout, stderr, 或文件路径
 ```
 
-### 客户端配置
+### 单独配置文件
 
+如果只需要服务端或客户端配置，可以只保留相应部分：
+
+**仅服务端**:
+```yaml
+server:
+  listen: ":8080"
+  ws_port: ":18081"
+  key: "your-secret-key"
+  max_concurrent_requests: 50
+  compression_level: 15
+
+log:
+  level: "info"
+```
+
+**仅客户端**:
 ```yaml
 client:
-  server_ws: "ws://vps:8080"   # 服务端WebSocket地址
-  llama_url: "http://127.0.0.1:8080" # 本地llama-server
-  key: "your-secret-key"       # 必须与服务器相同
-  reconnect_interval: 5s       # 重连间隔
-  max_concurrent_requests: 10  # 最大并发请求数
+  server_ws: "ws://vps:18081"
+  llama_url: "http://127.0.0.1:8080"
+  key: "your-secret-key"
+  max_concurrent_requests: 10
+  compression_level: 15
+
+log:
+  level: "info"
 ```
 
 ### 环境变量
@@ -258,14 +360,32 @@ systemctl --user start llama-proxy
 ### 常见问题
 
 **Q: 客户端无法连接到服务端**
-```bash
-# 检查网络连通性
-curl -v http://your-vps:8080/health
 
-# 检查防火墙
+```bash
+# 1. 检查服务端是否运行
+ps aux | grep llama-proxy
+
+# 2. 检查端口监听状态（服务端）
+ss -tlnp | grep -E "8080|18081"
+
+# 3. 检查网络连通性（客户端）
+curl -v http://your-vps:8080/health
+curl -v http://your-vps:18081/health
+
+# 4. 检查防火墙（服务端）
 sudo ufw status
-sudo iptables -L -n | grep 8080
+sudo ufw allow 8080/tcp
+sudo ufw allow 18081/tcp
+
+# 5. 检查云服务商安全组
+# 登录控制台确认入方向放行相应端口
 ```
+
+**常见原因**:
+1. 服务端未启动或启动失败
+2. 防火墙/安全组未放行端口
+3. 服务端配置了 `127.0.0.1:8080`（仅本地监听），应改为 `:8080`
+4. 客户端连接的 `server_ws` 端口与服务端 `ws_port` 不一致
 
 **Q: 内存占用过高**
 ```yaml
@@ -300,9 +420,45 @@ client:
 curl http://localhost:8080/stats
 ```
 
+## Windows 开发特别提示
+
+### 从 Windows 开发到 Linux 部署
+
+**场景**: 在 Windows 笔记本上开发，部署到 Linux VPS
+
+```powershell
+# 1. 编辑代码后，构建 Linux 版本
+$env:GOOS = 'linux'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
+go build -ldflags "-s -w" -o bin/llama-proxy-linux-amd64 ./cmd/llama-proxy
+Remove-Item Env:\GOOS; Remove-Item Env:\GOARCH; Remove-Item Env:\CGO_ENABLED
+
+# 2. 上传到服务器
+scp bin/llama-proxy-linux-amd64 user@vps:~/llama-proxy/
+
+# 3. SSH 到服务器重启服务
+ssh user@vps "cd llama-proxy && sudo systemctl restart llama-proxy"
+```
+
+### 避免环境变量污染
+
+交叉编译后务必清理环境变量，否则后续的本机构建会生成错误格式的二进制：
+
+```powershell
+# 错误：编译后没有清理，导致后续构建的 .exe 是 Linux 格式
+$env:GOOS = 'linux'; go build -o bin/llama-proxy-linux-amd64 ./cmd/llama-proxy
+go build -o bin/llama-proxy.exe ./cmd/llama-proxy  # ❌ 这个 exe 实际上是 Linux 格式！
+
+# 正确：每次交叉编译后清理环境变量
+$env:GOOS = 'linux'; go build -o bin/llama-proxy-linux-amd64 ./cmd/llama-proxy
+Remove-Item Env:\GOOS
+go build -o bin/llama-proxy.exe ./cmd/llama-proxy  # ✓ 正确的 Windows exe
+```
+
 ## 开发
 
 ### 构建
+
+#### Linux/macOS
 
 ```bash
 # 本地构建
@@ -317,6 +473,25 @@ make test
 # 代码检查
 make lint
 ```
+
+#### Windows
+
+```powershell
+# 构建 Windows 版本（当前平台）
+go build -ldflags "-s -w" -o bin/llama-proxy.exe ./cmd/llama-proxy
+
+# 交叉编译 Linux 版本（用于服务器）
+$env:GOOS = 'linux'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
+go build -ldflags "-s -w" -o bin/llama-proxy-linux-amd64 ./cmd/llama-proxy
+Remove-Item Env:\GOOS; Remove-Item Env:\GOARCH; Remove-Item Env:\CGO_ENABLED
+
+# 交叉编译 macOS 版本
+$env:GOOS = 'darwin'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
+go build -ldflags "-s -w" -o bin/llama-proxy-darwin-amd64 ./cmd/llama-proxy
+Remove-Item Env:\GOOS; Remove-Item Env:\GOARCH; Remove-Item Env:\CGO_ENABLED
+```
+
+**注意**: Windows 上 `make build-linux` 会失败，因为 Make 使用 Unix 环境变量语法 (`GOOS=linux go build`)，这在 Windows PowerShell 中不生效。
 
 ### 项目结构
 
