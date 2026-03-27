@@ -1,1 +1,5 @@
 config.yaml
+run_hidden.vbs
+start_proxy.bat
+.idea
+.vscode
