@@ -89,7 +89,7 @@ func New(cfg *config.ClientConfig, logger *logrus.Logger) (*Client, error) {
 		sendChan:   make(chan *protocol.WebSocketMessage, 100),
 		recvChan:   make(chan *protocol.WebSocketMessage, 100),
 		httpClient: &http.Client{
-			Timeout:   5 * time.Minute,
+			Timeout:   15 * time.Minute,
 			Transport: &http.Transport{
 				MaxIdleConns:        10,
 				MaxIdleConnsPerHost: 5,

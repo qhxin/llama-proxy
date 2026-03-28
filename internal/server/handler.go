@@ -142,7 +142,7 @@ func (s *Server) handleProxyRequest(w http.ResponseWriter, r *http.Request, endp
 
 // handleNonStreamResponse 处理非流式响应
 func (s *Server) handleNonStreamResponse(req *PendingRequest, w http.ResponseWriter) {
-	timeout := time.NewTimer(2 * time.Minute)
+	timeout := time.NewTimer(10 * time.Minute)
 	defer timeout.Stop()
 
 	for {
@@ -228,7 +228,7 @@ func (s *Server) handleStreamResponse(req *PendingRequest, w http.ResponseWriter
 	}
 	flusher.Flush()
 
-	timeout := time.NewTimer(5 * time.Minute)
+	timeout := time.NewTimer(15 * time.Minute)
 	defer timeout.Stop()
 
 	for {
