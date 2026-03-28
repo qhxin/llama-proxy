@@ -118,8 +118,8 @@ func New(cfg *config.ServerConfig, logger *logrus.Logger) (*Server, error) {
 	s.httpServer = &http.Server{
 		Addr:         cfg.Listen,
 		Handler:      router,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		ReadTimeout:  2 * time.Minute,
+		WriteTimeout: 0,
 		IdleTimeout:  120 * time.Second,
 	}
 
