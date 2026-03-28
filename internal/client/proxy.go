@@ -165,7 +165,10 @@ func (c *Client) handleStreamRequest(requestID string, httpReq *protocol.HTTPReq
 		return
 	}
 
-	// 处理SSE流
+	// 处理SSE流 - 为这个流式请求借用专用编码器
+	streamEncoder := c.crypto.BorrowEncoder()
+	defer c.crypto.ReturnEncoder(streamEncoder)
+
 	reader := &sseReader{reader: resp.Body}
 
 	for {
@@ -186,8 +189,8 @@ func (c *Client) handleStreamRequest(requestID string, httpReq *protocol.HTTPReq
 			continue
 		}
 
-		// 发送流块（已经是SSE格式，直接转发）
-		c.sendResponse(requestID, protocol.MessageTypeStreamChunk, event, true)
+		// 发送流块（复用同一个编码器）
+		c.sendResponseWithEncoder(requestID, protocol.MessageTypeStreamChunk, event, true, streamEncoder)
 
 		// 检查是否收到取消信号
 		select {
@@ -207,10 +210,14 @@ type sseReader struct {
 // readEvent 读取一个SSE事件
 func (r *sseReader) readEvent() ([]byte, error) {
 	var event bytes.Buffer
-	buf := make([]byte, 1)
+
+	// 复用缓冲区，避免每次分配
+	if r.buffer == nil {
+		r.buffer = make([]byte, 4096) // 4KB 缓冲区
+	}
 
 	for {
-		n, err := r.reader.Read(buf)
+		n, err := r.reader.Read(r.buffer)
 		if err != nil {
 			if err == io.EOF && event.Len() > 0 {
 				return event.Bytes(), nil
@@ -221,8 +228,8 @@ func (r *sseReader) readEvent() ([]byte, error) {
 			continue
 		}
 
-		// 添加字符
-		event.Write(buf)
+		// 添加读取的数据
+		event.Write(r.buffer[:n])
 
 		// 检查事件结束（双换行）
 		data := event.Bytes()

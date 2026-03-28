@@ -127,6 +127,7 @@ func (s *Server) handleProxyRequest(w http.ResponseWriter, r *http.Request, endp
 		s.logger.Debugf("Request %s sent to client %s", requestID, client.ID)
 	case <-time.After(5 * time.Second):
 		s.logger.Errorf("Failed to send request %s: timeout", requestID)
+		protocol.ReleaseMessage(msg) // 释放消息避免内存泄漏
 		http.Error(w, "Client busy", http.StatusServiceUnavailable)
 		return
 	}

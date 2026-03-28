@@ -161,6 +161,35 @@ func (c *Crypto) EncryptAndCompress(data []byte) ([]byte, error) {
 	return result, nil
 }
 
+// EncryptWithEncoder 使用指定编码器加密并压缩（用于流式响应复用编码器）
+func (c *Crypto) EncryptWithEncoder(data []byte, encoder *zstd.Encoder) ([]byte, error) {
+	// 1. 压缩
+	compressed := encoder.EncodeAll(data, nil)
+
+	// 2. 添加时间戳防重放
+	timestamp := make([]byte, 8)
+	binary.BigEndian.PutUint64(timestamp, uint64(time.Now().Unix()))
+
+	// 3. 加密（压缩数据 + 时间戳）
+	plaintext := make([]byte, len(timestamp)+len(compressed))
+	copy(plaintext, timestamp)
+	copy(plaintext[len(timestamp):], compressed)
+
+	nonce := make([]byte, NonceSize)
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, fmt.Errorf("failed to generate nonce: %w", err)
+	}
+
+	ciphertext := c.gcm.Seal(nonce, nonce, plaintext, nil)
+
+	// 4. 组装最终输出: [timestamp][nonce+ciphertext]
+	result := make([]byte, 8+len(ciphertext))
+	copy(result, timestamp)
+	copy(result[8:], ciphertext)
+
+	return result, nil
+}
+
 // DecryptAndDecompress 解密并解压数据
 func (c *Crypto) DecryptAndDecompress(data []byte) ([]byte, error) {
 	if len(data) < 8+NonceSize+c.gcm.Overhead() {
@@ -202,26 +231,26 @@ func (c *Crypto) DecryptAndDecompress(data []byte) ([]byte, error) {
 
 // compress 压缩数据（使用对象池）
 func (c *Crypto) compress(data []byte) ([]byte, error) {
-	level := zstd.EncoderLevelFromZstd(int(c.compressionLevel.Load()))
-	
-	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(level))
-	if err != nil {
-		return nil, err
-	}
-	defer enc.Close()
-
+	enc := c.encoderPool.Get().(*zstd.Encoder)
+	defer c.encoderPool.Put(enc)
 	return enc.EncodeAll(data, nil), nil
 }
 
 // decompress 解压数据（使用对象池）
 func (c *Crypto) decompress(data []byte) ([]byte, error) {
-	dec, err := zstd.NewReader(nil)
-	if err != nil {
-		return nil, err
-	}
-	defer dec.Close()
-
+	dec := c.decoderPool.Get().(*zstd.Decoder)
+	defer c.decoderPool.Put(dec)
 	return dec.DecodeAll(data, nil)
+}
+
+// BorrowEncoder 从池中获取编码器（用于流式响应批量复用）
+func (c *Crypto) BorrowEncoder() *zstd.Encoder {
+	return c.encoderPool.Get().(*zstd.Encoder)
+}
+
+// ReturnEncoder 归还编码器到池中
+func (c *Crypto) ReturnEncoder(enc *zstd.Encoder) {
+	c.encoderPool.Put(enc)
 }
 
 // GetOverhead 计算加密开销（用于预估）

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/klauspost/compress/zstd"
 	"github.com/sirupsen/logrus"
 	"github.com/user/llama-proxy/internal/config"
 	"github.com/user/llama-proxy/internal/crypto"
@@ -442,6 +443,36 @@ func (c *Client) messageProcessor() {
 func (c *Client) sendResponse(requestID string, msgType protocol.MessageType, data []byte, stream bool) {
 	// 加密响应
 	encrypted, err := c.crypto.EncryptAndCompress(data)
+	if err != nil {
+		c.logger.Errorf("Failed to encrypt response: %v", err)
+		return
+	}
+
+	// 记录流量
+	c.bytesOut.Add(int64(len(data)))
+
+	// 创建消息
+	msg := protocol.NewMessage(requestID, msgType, encrypted, stream)
+
+	select {
+	case c.sendChan <- msg:
+	case <-time.After(5 * time.Second):
+		c.logger.Warnf("Failed to send response %s: timeout", requestID)
+		protocol.ReleaseMessage(msg)
+	}
+}
+
+// sendResponseWithEncoder 使用指定编码器发送响应（用于流式响应复用编码器）
+func (c *Client) sendResponseWithEncoder(requestID string, msgType protocol.MessageType, data []byte, stream bool, encoder interface{}) {
+	// 类型断言获取 zstd.Encoder
+	enc, ok := encoder.(*zstd.Encoder)
+	if !ok {
+		c.logger.Errorf("Invalid encoder type")
+		return
+	}
+
+	// 使用指定编码器加密并压缩
+	encrypted, err := c.crypto.EncryptWithEncoder(data, enc)
 	if err != nil {
 		c.logger.Errorf("Failed to encrypt response: %v", err)
 		return
